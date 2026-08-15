@@ -72,3 +72,27 @@ def test_rejects_both_weight_and_quantity_columns(tmp_path):
     p = write(tmp_path, "p.csv", "ticker,weight,quantity\nPKO.WA,0.5,10\n")
     with pytest.raises(PortfolioError, match="both"):
         load(p)
+
+
+def test_rejects_blank_weight_cell(tmp_path):
+    p = write(tmp_path, "p.csv", "ticker,weight\nPKO.WA,0.5\nSPY,\n")
+    with pytest.raises(PortfolioError, match="SPY"):
+        load(p)
+
+
+def test_rejects_blank_quantity_cell(tmp_path):
+    p = write(tmp_path, "p.csv", "ticker,quantity\nPKO.WA,120\nSPY,\n")
+    with pytest.raises(PortfolioError, match="SPY"):
+        load(p)
+
+
+def test_rejects_non_numeric_weight(tmp_path):
+    p = write(tmp_path, "p.csv", "ticker,weight\nPKO.WA,0.5\nSPY,abc\n")
+    with pytest.raises(PortfolioError, match="SPY"):
+        load(p)
+
+
+def test_rejects_non_numeric_quantity(tmp_path):
+    p = write(tmp_path, "p.csv", "ticker,quantity\nPKO.WA,120\nSPY,xyz\n")
+    with pytest.raises(PortfolioError, match="SPY"):
+        load(p)

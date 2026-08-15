@@ -27,6 +27,15 @@ def _frame(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
+def _is_float_convertible(value) -> bool:
+    """Check if a value can be converted to float."""
+    try:
+        float(value)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def load(path: str | Path) -> Portfolio:
     path = Path(path)
     df = _frame(path)
@@ -51,12 +60,26 @@ def load(path: str | Path) -> Portfolio:
     normalized = False
 
     if has_q:
-        quantities = df["quantity"].to_numpy(dtype=float)
+        try:
+            quantities = df["quantity"].to_numpy(dtype=float)
+        except ValueError as e:
+            bad = [t for t, v in zip(tickers, df["quantity"]) if not _is_float_convertible(v)]
+            raise PortfolioError(f"{path}: non-numeric quantity for {', '.join(bad)}")
+        non_finite = [t for t, q in zip(tickers, quantities) if not np.isfinite(q)]
+        if non_finite:
+            raise PortfolioError(f"{path}: non-finite quantity for {', '.join(non_finite)}")
         if (quantities < 0).any():
             bad = [t for t, q in zip(tickers, quantities) if q < 0]
             raise PortfolioError(f"{path}: negative quantity for {', '.join(bad)}")
     elif has_w:
-        weights = df["weight"].to_numpy(dtype=float)
+        try:
+            weights = df["weight"].to_numpy(dtype=float)
+        except ValueError as e:
+            bad = [t for t, v in zip(tickers, df["weight"]) if not _is_float_convertible(v)]
+            raise PortfolioError(f"{path}: non-numeric weight for {', '.join(bad)}")
+        non_finite = [t for t, w in zip(tickers, weights) if not np.isfinite(w)]
+        if non_finite:
+            raise PortfolioError(f"{path}: non-finite weight for {', '.join(non_finite)}")
         if (weights < 0).any():
             bad = [t for t, w in zip(tickers, weights) if w < 0]
             raise PortfolioError(f"{path}: negative weight for {', '.join(bad)}")
