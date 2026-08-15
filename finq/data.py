@@ -132,6 +132,9 @@ def _fetch_nbp(code: str) -> pd.DataFrame:
             raise DataError(f"FX {code}: NBP does not publish this currency")
         if r.status_code == 200:
             rows += [(d["effectiveDate"], d["mid"]) for d in r.json()["rates"]]
+        elif r.status_code != 404:
+            # 404 is tolerated (no publication days in range), but any other non-200 is a hard failure
+            raise DataError(f"FX {code}: fetch failed (status {r.status_code} for {cursor.date()} to {stop.date()})")
         cursor = stop + pd.Timedelta(days=1)
         time.sleep(0.3)
     if not rows:
@@ -151,10 +154,21 @@ def fx(code: str, start: str, end: str, cache_dir: Path | None = None) -> pd.Ser
     cache_dir = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE
     path = cache_dir / f"FX_{code}.csv"
 
+    fresh_enough = False
     if path.exists():
+        age_days = (date.today() - date.fromtimestamp(path.stat().st_mtime)).days
+        fresh_enough = age_days < 1
+
+    if path.exists() and fresh_enough:
         df = pd.read_csv(path, parse_dates=["date"])
     else:
-        df = _fetch_nbp(code)
+        try:
+            df = _fetch_nbp(code)
+        except DataError:
+            if path.exists():
+                df = pd.read_csv(path, parse_dates=["date"])
+            else:
+                raise
         cache_dir.mkdir(parents=True, exist_ok=True)
         df.to_csv(path, index=False)
 
