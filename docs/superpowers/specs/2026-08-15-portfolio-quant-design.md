@@ -257,12 +257,20 @@ in output.
 - `max_drawdown(R, w)` — on the fixed-weight return series
 - `betas(R, w, benchmarks)` — separate betas to the Polish and US markets, since the
   portfolio spans two and a single blended beta would hide which one drives it.
-  Verified benchmark tickers: **`WIG20.WA`** (PLN) and **`^GSPC`** (USD). Note that
-  the broad `^WIG` index is *not* usable — Yahoo lists the symbol but returns no
-  currency and no price series at all. WIG20 is therefore the Polish proxy, with the
-  caveat that it is a 20-name, bank- and energy-heavy index rather than the whole
-  market, so a low beta to it does not imply low Polish market exposure. Any further
-  benchmark ticker must be verified to return an actual price series before use.
+  Verified benchmark tickers: **`ETFBW20TR.WA`** (PLN) and **`^GSPC`** (USD).
+
+  Raw WSE index symbols cannot serve as benchmarks. `^WIG`, `WIG20.WA`, `MWIG40.WA`
+  and `SWIG80.WA` are all `instrumentType: INDEX` on Yahoo: the symbol resolves and
+  returns a current quote, but the chart endpoint returns a single bar and no history,
+  so no return series exists to regress against. (An earlier draft of this spec listed
+  `WIG20.WA` as verified — that check confirmed a quote, not a series, and was wrong.)
+  The Polish benchmark is therefore `ETFBW20TR.WA`, the Beta ETF WIG20TR: PLN-denominated,
+  WSE-listed, trading on the same calendar as the Polish holdings, with history from
+  2019-01-07. Two caveats travel with it: it tracks WIG20, so it represents 20 bank- and
+  energy-heavy names rather than the broad market, and it is a total-return tracker while
+  holdings carry price returns, so it includes dividends they do not. Any further
+  benchmark ticker must be verified to return an actual multi-bar price series — not
+  merely a resolvable quote — before use.
 - `exceedance_correlation(R, threshold)` — Longin-Solnik / Ang-Bekaert: correlation
   conditional on both standardized returns falling below `-threshold` σ, compared against
   the unconditional correlation. Answers whether diversification survives a drawdown,

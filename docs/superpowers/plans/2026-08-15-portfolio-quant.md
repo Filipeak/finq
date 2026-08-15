@@ -303,7 +303,9 @@ git commit -m "feat: portfolio file loading and validation"
 - Consumes: nothing
 - Produces: `PriceData` dataclass (fields above); `finq.data.prices(tickers: list[str], start: str, end: str, cache_dir: Path | None = None) -> PriceData`; `finq.data.DataError(Exception)`; module constant `finq.data.USER_AGENT`
 
-**Verified fixture tickers** (all return close and volume): `PKO.WA`, `CDR.WA`, `PKN.WA`, `PZU.WA` (PLN) and `SPY`, `QQQ`, `GLD` (USD). Benchmarks: `WIG20.WA`, `^GSPC`. Note `^WIG` is a hollow Yahoo listing that returns no price series — never use it.
+**Verified fixture tickers** (all return close and volume): `PKO.WA`, `CDR.WA`, `PKN.WA`, `PZU.WA` (PLN) and `SPY`, `QQQ`, `GLD` (USD). Benchmarks: `ETFBW20TR.WA` (PLN) and `^GSPC` (USD).
+
+**Do not use raw WSE index symbols as benchmarks.** `^WIG` and `WIG20.WA` are both `instrumentType: INDEX` on Yahoo: the symbol resolves and returns a current quote, but the chart endpoint yields a single bar and no history, so no return series can be built. The same holds for `MWIG40.WA` and `SWIG80.WA`. `ETFBW20TR.WA` (Beta ETF WIG20TR) is a PLN-denominated, WSE-listed total-return tracker with history from 2019-01-07 (1901 bars) and is the Polish benchmark this project uses.
 
 - [ ] **Step 1: Write the fixture generator and run it once**
 
@@ -321,7 +323,7 @@ import requests
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 TICKERS = ["PKO.WA", "CDR.WA", "PKN.WA", "PZU.WA", "SPY", "QQQ", "GLD",
-           "WIG20.WA", "^GSPC"]
+           "ETFBW20TR.WA", "^GSPC"]
 OUT = Path("tests/fixtures")
 
 
@@ -2805,7 +2807,7 @@ import pandas as pd
 from finq import covariance, data, liquidity as liq, optimize, portfolio, report, risk
 from finq.returns import aligned
 
-BENCHMARKS = {"WIG20.WA": "WIG20", "^GSPC": "GSPC"}
+BENCHMARKS = {"ETFBW20TR.WA": "WIG20TR", "^GSPC": "GSPC"}
 
 
 def _build(args):
@@ -3105,8 +3107,13 @@ difference between them — that difference is the finding.
 - **Sample covariance divides by T, not T-1.** The shrinkage asymptotics assume it.
 - **FX belongs inside the covariance matrix.** It is folded into returns before
   estimation, so every USD holding shares a currency factor. Never add it afterwards.
-- **`^WIG` is unusable** — Yahoo resolves the symbol but returns no price series. Use
-  `WIG20.WA`, remembering it is 20 bank- and energy-heavy names, not the broad market.
+- **Raw WSE index symbols are unusable as benchmarks.** `^WIG`, `WIG20.WA`, `MWIG40.WA`
+  and `SWIG80.WA` are all `instrumentType: INDEX` on Yahoo — the symbol resolves and
+  returns a live quote, but the chart endpoint gives one bar and no history, so there is
+  no return series to regress against. Use `ETFBW20TR.WA` (Beta ETF WIG20TR), a
+  PLN-denominated WSE-listed total-return tracker. Remember it follows WIG20 — 20 bank-
+  and energy-heavy names, not the broad Polish market — and being total-return it
+  includes dividends while holdings' price returns do not.
 
 ## API reference
 
