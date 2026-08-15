@@ -112,3 +112,54 @@ def prices(tickers: list[str], start: str, end: str,
     close_df = pd.DataFrame(closes)
     volume_df = pd.DataFrame(volumes).reindex(index=close_df.index, columns=close_df.columns)
     return PriceData(close_df, volume_df, currency, stale)
+
+
+_NBP = "https://api.nbp.pl/api/exchangerates/rates/a/"
+
+
+def _fetch_nbp(code: str) -> pd.DataFrame:
+    end = pd.Timestamp.today().normalize()
+    start = end - pd.DateOffset(years=3)
+    rows, cursor = [], start
+    while cursor < end:
+        stop = min(cursor + pd.Timedelta(days=90), end)
+        url = f"{_NBP}{code.lower()}/{cursor.date()}/{stop.date()}/?format=json"
+        try:
+            r = requests.get(url, timeout=30)
+        except Exception as exc:
+            raise DataError(f"FX {code}: fetch failed ({exc})") from exc
+        if r.status_code == 404 and not rows:
+            raise DataError(f"FX {code}: NBP does not publish this currency")
+        if r.status_code == 200:
+            rows += [(d["effectiveDate"], d["mid"]) for d in r.json()["rates"]]
+        cursor = stop + pd.Timedelta(days=1)
+        time.sleep(0.3)
+    if not rows:
+        raise DataError(f"FX {code}: NBP returned no rates")
+    return pd.DataFrame(rows, columns=["date", "mid"]).drop_duplicates("date")
+
+
+def fx(code: str, start: str, end: str, cache_dir: Path | None = None) -> pd.Series:
+    """PLN per one unit of `code`, on NBP publication days."""
+    code = code.upper()
+    lo, hi = pd.Timestamp(start), pd.Timestamp(end)
+
+    if code == "PLN":
+        idx = pd.date_range(lo, hi, freq="D")
+        return pd.Series(1.0, index=idx, name="PLN")
+
+    cache_dir = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE
+    path = cache_dir / f"FX_{code}.csv"
+
+    if path.exists():
+        df = pd.read_csv(path, parse_dates=["date"])
+    else:
+        df = _fetch_nbp(code)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        df.to_csv(path, index=False)
+
+    s = df.set_index("date")["mid"].sort_index()
+    s = s[(s.index >= lo) & (s.index <= hi)]
+    if s.empty:
+        raise DataError(f"FX {code}: no rates between {start} and {end}")
+    return s.rename(code)

@@ -37,6 +37,25 @@ def fetch(ticker: str) -> pd.DataFrame:
     return df
 
 
+def fx_fixture(code: str) -> None:
+    """NBP allows at most 93 days per request, so walk the window in chunks."""
+    end = pd.Timestamp.today().normalize()
+    start = end - pd.DateOffset(years=3)
+    rows, cursor = [], start
+    while cursor < end:
+        stop = min(cursor + pd.Timedelta(days=90), end)
+        url = (f"https://api.nbp.pl/api/exchangerates/rates/a/{code.lower()}/"
+               f"{cursor.date()}/{stop.date()}/?format=json")
+        r = requests.get(url, timeout=30)
+        if r.status_code == 200:
+            rows += [(d["effectiveDate"], d["mid"]) for d in r.json()["rates"]]
+        cursor = stop + pd.Timedelta(days=1)
+        time.sleep(0.3)
+    df = pd.DataFrame(rows, columns=["date", "mid"]).drop_duplicates("date")
+    df.to_csv(OUT / f"FX_{code.upper()}.csv", index=False)
+    print(f"FX {code}: {len(df)} rows")
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     currencies = {}
@@ -47,6 +66,7 @@ def main() -> None:
         print(f"{t}: {len(df)} rows, {df.attrs['currency']}")
         time.sleep(0.5)
     (OUT / "currencies.json").write_text(json.dumps(currencies, indent=2))
+    fx_fixture("USD")
 
 
 if __name__ == "__main__":
