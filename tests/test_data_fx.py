@@ -52,20 +52,43 @@ def test_unknown_currency_fails_loudly(seeded_cache, monkeypatch):
 
 
 def test_non_200_non_404_status_fails_loudly(seeded_cache, monkeypatch):
-    """A mid-range non-200/non-404 status (e.g. 500, 429) must raise, not silently drop."""
+    """A mid-range non-200/non-404 status (e.g. 500, 429) must raise, not silently drop.
+    First chunk returns 200, second chunk returns 500 to test the mid-range error case.
+    """
     import requests
+    import json
 
-    def fake_fetch_with_error(code):
-        # Simulate a transient server error on a non-first chunk
+    call_count = [0]  # Closure counter for chunk requests
+
+    def fake_get(url, **kwargs):
+        call_count[0] += 1
+
         class FakeResponse:
-            status_code = 500
+            def __init__(self, status, data=None):
+                self.status_code = status
+                self._data = data
 
-        # Simulate the chunking logic encountering a 500
-        raise DataError(f"FX {code}: fetch failed (status 500 for 2025-06-01 to 2025-08-29)")
+            def json(self):
+                if self._data is None:
+                    raise ValueError("No JSON data")
+                return json.loads(self._data)
 
-    monkeypatch.setattr(data_module, "_fetch_nbp", fake_fetch_with_error)
-    with pytest.raises(DataError, match="fetch failed"):
+        if call_count[0] == 1:
+            # First chunk returns 200 with some data
+            return FakeResponse(200, b'{"rates": [{"effectiveDate": "2025-06-01", "mid": 4.0}]}')
+        else:
+            # Second chunk returns 500
+            return FakeResponse(500)
+
+    monkeypatch.setattr("requests.get", fake_get)
+    with pytest.raises(DataError) as exc_info:
+        # EUR not in cache, so fx() calls _fetch_nbp which calls requests.get
         fx("EUR", "2025-01-01", "2025-12-31", cache_dir=seeded_cache)
+
+    error_msg = str(exc_info.value)
+    assert "EUR" in error_msg
+    assert "fetch failed" in error_msg
+    assert "500" in error_msg
 
 
 def test_stale_cache_refetch_succeeds_returns_fresh_data(seeded_cache, monkeypatch):
@@ -92,8 +115,8 @@ def test_stale_cache_refetch_succeeds_returns_fresh_data(seeded_cache, monkeypat
     assert s.iloc[-1] == 3.85
 
 
-def test_stale_cache_refetch_fails_serves_stale_cache_flagged(seeded_cache, monkeypatch):
-    """When cached FX file is stale and refetch fails, serve cache but flag it as stale."""
+def test_stale_cache_refetch_fails_serves_cache(seeded_cache, monkeypatch):
+    """When cached FX file is stale and refetch fails, serve cache without rewriting it."""
     path = seeded_cache / "FX_USD.csv"
 
     # Backdate the file to 2+ days ago
@@ -110,6 +133,68 @@ def test_stale_cache_refetch_fails_serves_stale_cache_flagged(seeded_cache, monk
     s = fx("USD", "2025-01-01", "2025-06-30", cache_dir=seeded_cache)
     assert isinstance(s, pd.Series)
     assert (s > 2.0).all() and (s < 6.0).all()
+
+
+def test_stale_cache_refetch_fails_preserves_mtime(seeded_cache, monkeypatch):
+    """When refetch fails, the cached file's mtime must not be updated (no re-write).
+    This ensures subsequent calls still recognize the cache as stale.
+    """
+    path = seeded_cache / "FX_USD.csv"
+
+    # Backdate the file to 3 days ago
+    old_mtime = datetime.now().timestamp() - 86400 * 3
+    os.utime(path, (old_mtime, old_mtime))
+
+    # Capture the original mtime
+    original_mtime = path.stat().st_mtime
+
+    # Mock a failed fetch
+    def fake_fetch_fails(code):
+        raise DataError(f"FX {code}: fetch failed (network error)")
+
+    monkeypatch.setattr(data_module, "_fetch_nbp", fake_fetch_fails)
+
+    # Call fx() once (will fail to refetch but fall back to cache)
+    fx("USD", "2025-01-01", "2025-06-30", cache_dir=seeded_cache)
+
+    # mtime must not have changed
+    new_mtime = path.stat().st_mtime
+    assert new_mtime == original_mtime, f"mtime changed from {original_mtime} to {new_mtime}"
+
+
+def test_404_mid_range_is_tolerated(seeded_cache, monkeypatch):
+    """A 404 response mid-range (no publication days) must NOT raise, only if first chunk 404s."""
+    import json
+
+    call_count = [0]
+
+    def fake_get(url, **kwargs):
+        call_count[0] += 1
+
+        class FakeResponse:
+            def __init__(self, status, data=None):
+                self.status_code = status
+                self._data = data
+
+            def json(self):
+                if self._data is None:
+                    raise ValueError("No JSON data")
+                return json.loads(self._data)
+
+        if call_count[0] == 1:
+            # First chunk returns 200 with some data
+            return FakeResponse(200, b'{"rates": [{"effectiveDate": "2025-06-01", "mid": 4.0}]}')
+        else:
+            # Second chunk returns 404 (no publication days, legitimate)
+            return FakeResponse(404)
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    # Should NOT raise despite 404 on second chunk
+    s = fx("EUR", "2025-01-01", "2025-12-31", cache_dir=seeded_cache)
+    assert isinstance(s, pd.Series)
+    # Should have at least the 200 chunk's data
+    assert len(s) > 0
 
 
 def test_fresh_cache_no_refetch(seeded_cache, monkeypatch):

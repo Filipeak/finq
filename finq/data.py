@@ -60,6 +60,14 @@ def _fetch_yahoo(ticker: str) -> tuple[pd.DataFrame, str]:
     return df, currency
 
 
+def _is_cache_fresh(path: Path) -> bool:
+    """Check if cache file is fresh (< 1 day old)."""
+    if not path.exists():
+        return False
+    age_days = (date.today() - date.fromtimestamp(path.stat().st_mtime)).days
+    return age_days < 1
+
+
 def _load_one(ticker: str, cache_dir: Path) -> tuple[pd.DataFrame, str, bool]:
     """Return (frame, currency, stale). Fresh cache first; refetch when stale,
     falling back to the cache with stale=True only if the refetch itself fails.
@@ -68,12 +76,7 @@ def _load_one(ticker: str, cache_dir: Path) -> tuple[pd.DataFrame, str, bool]:
     cur_path = cache_dir / "currencies.json"
     currencies = json.loads(cur_path.read_text()) if cur_path.exists() else {}
 
-    fresh_enough = False
-    if path.exists():
-        age_days = (date.today() - date.fromtimestamp(path.stat().st_mtime)).days
-        fresh_enough = age_days < 1
-
-    if path.exists() and fresh_enough and ticker in currencies:
+    if path.exists() and _is_cache_fresh(path) and ticker in currencies:
         return pd.read_csv(path, parse_dates=["date"]), currencies[ticker], False
 
     try:
@@ -154,19 +157,20 @@ def fx(code: str, start: str, end: str, cache_dir: Path | None = None) -> pd.Ser
     cache_dir = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE
     path = cache_dir / f"FX_{code}.csv"
 
-    fresh_enough = False
-    if path.exists():
-        age_days = (date.today() - date.fromtimestamp(path.stat().st_mtime)).days
-        fresh_enough = age_days < 1
-
-    if path.exists() and fresh_enough:
+    if path.exists() and _is_cache_fresh(path):
         df = pd.read_csv(path, parse_dates=["date"])
     else:
         try:
             df = _fetch_nbp(code)
+            df["date"] = pd.to_datetime(df["date"])
         except DataError:
             if path.exists():
                 df = pd.read_csv(path, parse_dates=["date"])
+                s = df.set_index("date")["mid"].sort_index()
+                s = s[(s.index >= lo) & (s.index <= hi)]
+                if s.empty:
+                    raise DataError(f"FX {code}: no rates between {start} and {end}")
+                return s.rename(code)
             else:
                 raise
         cache_dir.mkdir(parents=True, exist_ok=True)
