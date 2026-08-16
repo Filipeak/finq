@@ -199,10 +199,13 @@ def test_rejects_unknown_method():
 def test_known_but_unimplemented_methods_say_so_rather_than_unknown():
     # A method that is on METHODS but not yet built must say "not implemented",
     # not "unknown" -- the two mean very different things to a caller.
-    # 'ledoit_wolf' graduated out of this list in Task 6; 'rmt_clean' is next.
+    # 'ledoit_wolf' graduated out of this list in Task 6; 'rmt_clean' in Task 7.
+    # Nothing remains on METHODS that isn't implemented, so this test currently
+    # has no cases to sweep -- kept as a placeholder so the next unimplemented
+    # method has an obvious home.
     rng = np.random.default_rng(16)
     R = rng.normal(size=(100, 5))
-    for method in ("rmt_clean",):
+    for method in ():
         with pytest.raises(CovarianceError, match="not implemented"):
             estimate(R, method=method)
 
@@ -211,7 +214,7 @@ def test_implemented_methods_do_not_report_themselves_unimplemented():
     # The counterpart to the test above: everything not listed there must work.
     rng = np.random.default_rng(116)
     R = rng.normal(size=(100, 5))
-    for method in ("sample", "ledoit_wolf"):
+    for method in ("sample", "ledoit_wolf", "rmt_clean"):
         Sigma, d = estimate(R, method=method)
         assert d.method == method
         assert Sigma.shape == (5, 5)

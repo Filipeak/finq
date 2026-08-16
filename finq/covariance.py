@@ -201,6 +201,57 @@ def ledoit_wolf_cc(R) -> tuple[np.ndarray, float]:
     return Sigma, delta
 
 
+def rmt_clean(R) -> np.ndarray:
+    """Laloux et al. (1998) eigenvalue cleaning of the correlation matrix.
+
+    Eigen-decompose the sample correlation matrix, fit the Marchenko-Pastur
+    bulk variance sigma^2, and replace every eigenvalue at or below the
+    upper edge lambda_plus (indistinguishable from noise) with a single
+    shared value chosen so the trace -- which must equal N for a
+    correlation matrix -- is preserved exactly. The eigenvalues above the
+    edge (and their eigenvectors) are kept as sample-estimated. The
+    diagonal is then renormalized to exactly 1 (replacing the bulk moves it
+    off 1 entry-by-entry even though the trace is fixed), and the result is
+    rescaled by the sample volatilities to recover a covariance matrix.
+    """
+    arr = _as_array(R)
+    T, N = arr.shape
+    S = sample_cov(arr)
+    var = np.diag(S).copy()
+    if (var <= 0).any():
+        raise CovarianceError("an asset has zero variance; remove it before estimating")
+    sd = np.sqrt(var)
+    C = S / np.outer(sd, sd)
+
+    evals, evecs = np.linalg.eigh(C)          # ascending
+    Q = T / N
+    sigma2 = _fit_bulk_sigma2(np.sort(evals)[::-1], Q)
+    _, hi = mp_band(Q, sigma2)
+
+    # At or below lambda_plus is noise, matching the "in band" convention
+    # _diagnostics uses for n_in_band -- an eigenvalue sitting exactly on
+    # the edge is indistinguishable from the bulk and must be cleaned.
+    is_noise = evals <= hi
+    n_noise = int(is_noise.sum())
+    if n_noise == 0:
+        cleaned_evals = evals.copy()
+    else:
+        # Trace of a correlation matrix is N; give the whole bulk one shared value.
+        signal_sum = float(evals[~is_noise].sum())
+        replacement = (N - signal_sum) / n_noise
+        replacement = max(replacement, 1e-12)
+        cleaned_evals = np.where(is_noise, replacement, evals)
+
+    C_clean = evecs @ np.diag(cleaned_evals) @ evecs.T
+    # Trace preservation fixes the sum of the diagonal, not each entry; renormalize.
+    d = np.sqrt(np.diag(C_clean))
+    C_clean = C_clean / np.outer(d, d)
+    np.fill_diagonal(C_clean, 1.0)
+
+    Sigma = C_clean * np.outer(sd, sd)
+    return (Sigma + Sigma.T) / 2.0
+
+
 def estimate(R, method: str = "ledoit_wolf") -> tuple[np.ndarray, Diagnostics]:
     if method not in METHODS:
         raise CovarianceError(f"unknown method {method!r}; use one of {METHODS}")
@@ -222,4 +273,5 @@ def estimate(R, method: str = "ledoit_wolf") -> tuple[np.ndarray, Diagnostics]:
         Sigma, delta = ledoit_wolf_cc(arr)
         return Sigma, _diagnostics("ledoit_wolf", Sigma, T, N, delta)
 
-    raise CovarianceError(f"method {method!r} not implemented yet")
+    Sigma = rmt_clean(arr)
+    return Sigma, _diagnostics("rmt_clean", Sigma, T, N, None)
