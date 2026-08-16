@@ -344,6 +344,25 @@ def test_rejects_non_finite_weights():
         portfolio_vol(SIGMA, np.array([0.5, np.inf, 0.2]))
 
 
+def test_rejects_an_asymmetric_sigma():
+    # eigh (used by effective_bets) reads only the lower triangle while
+    # w @ Sigma @ w reads all of it -- an asymmetric Sigma would make the two
+    # metrics silently disagree about the same portfolio instead of raising.
+    bad = SIGMA.copy()
+    bad[0, 1] += 0.05
+    with pytest.raises(RiskError, match="symmetric"):
+        portfolio_vol(bad, W)
+
+
+def test_accepts_symmetry_within_float_tolerance():
+    # Float noise (e.g. from an eigendecomposition reconstruction) must not
+    # trip the symmetry gate -- only a genuine asymmetry should. 1e-12 is well
+    # inside the gate's tolerance; SIGMA's own entries are O(1e-2) to O(1e-1).
+    noisy = SIGMA.copy()
+    noisy[0, 1] += 1e-12
+    portfolio_vol(noisy, W)  # must not raise
+
+
 def test_every_metric_goes_through_the_same_validation_gate():
     """A malformed input must fail the same way whichever entry point is used."""
     bad = SIGMA.copy()
@@ -353,3 +372,38 @@ def test_every_metric_goes_through_the_same_validation_gate():
             fn(bad, W)
         with pytest.raises(RiskError, match="length"):
             fn(SIGMA, np.array([0.5, 0.5]))
+
+
+# --------------------------------------------------------------------------
+# validation (_check_returns) -- the (R, w) counterpart used by return-matrix
+# metrics (tail/market/stress), which don't have a square Sigma to validate.
+# --------------------------------------------------------------------------
+
+def test_check_returns_accepts_a_matching_pair():
+    from finq.risk import _check_returns
+    R = np.zeros((100, 3))
+    R_out, w_out = _check_returns(R, W)
+    np.testing.assert_array_equal(R_out, R)
+    np.testing.assert_array_equal(w_out, W)
+
+
+def test_check_returns_rejects_weight_length_mismatch():
+    from finq.risk import _check_returns
+    with pytest.raises(RiskError, match="length"):
+        _check_returns(np.zeros((100, 3)), np.array([0.5, 0.5]))
+
+
+def test_check_returns_rejects_non_2d_input():
+    from finq.risk import _check_returns
+    with pytest.raises(RiskError, match="2-D"):
+        _check_returns(np.zeros(100), W)
+
+
+def test_check_returns_rejects_non_finite_values():
+    from finq.risk import _check_returns
+    R = np.zeros((100, 3))
+    R[5, 1] = np.nan
+    with pytest.raises(RiskError, match="non-finite"):
+        _check_returns(R, W)
+    with pytest.raises(RiskError, match="non-finite"):
+        _check_returns(np.zeros((100, 3)), np.array([0.5, np.inf, 0.2]))

@@ -32,6 +32,14 @@ def _check(Sigma, w) -> tuple[np.ndarray, np.ndarray]:
     reads downstream as "no risk computed" instead of "your covariance matrix
     is broken" -- and section 9's governing principle is that an analysis run
     on bad data must never look like a successful run.
+
+    Symmetry is checked (within a float tolerance) for the same reason:
+    ``eigh`` in ``effective_bets`` reads only the lower triangle, while
+    ``w @ Sigma @ w`` reads all of it, so an asymmetric Sigma would make the
+    two metrics silently disagree about the same portfolio instead of either
+    one raising. No PSD check is made -- rmt_clean can legitimately hand back
+    a matrix with faintly negative eigenvalues, and callers that care (like
+    ``_vol``) already clamp variance at zero rather than trusting positivity.
     """
     Sigma = np.asarray(Sigma, dtype=float)
     w = np.asarray(w, dtype=float)
@@ -46,7 +54,34 @@ def _check(Sigma, w) -> tuple[np.ndarray, np.ndarray]:
         raise RiskError("Sigma contains non-finite values (NaN or inf)")
     if not np.isfinite(w).all():
         raise RiskError("weights contain non-finite values (NaN or inf)")
+    if not np.allclose(Sigma, Sigma.T, rtol=1e-8, atol=1e-10):
+        raise RiskError("Sigma is not symmetric")
     return Sigma, w
+
+
+def _check_returns(R, w) -> tuple[np.ndarray, np.ndarray]:
+    """Validate a (return matrix, weights) pair for metrics built on raw returns.
+
+    ``_check`` validates a Sigma/w pair; tail, market and stress metrics (Task
+    9) work from the T x N return matrix directly instead, so they need R's
+    shape checked against w rather than a square Sigma's. Kept in this module,
+    next to ``_check``, so both validation gates live in one place rather than
+    each metric re-implementing its own.
+    """
+    R = np.asarray(R, dtype=float)
+    w = np.asarray(w, dtype=float)
+    if R.ndim != 2:
+        raise RiskError(f"returns must be a 2-D T x N matrix, got shape {R.shape}")
+    if w.ndim != 1 or w.shape[0] != R.shape[1]:
+        raise RiskError(
+            f"weight length {w.shape[0] if w.ndim == 1 else w.shape} does not "
+            f"match the number of assets in R ({R.shape[1]})"
+        )
+    if not np.isfinite(R).all():
+        raise RiskError("returns contain non-finite values (NaN or inf)")
+    if not np.isfinite(w).all():
+        raise RiskError("weights contain non-finite values (NaN or inf)")
+    return R, w
 
 
 def _annualize(value: float, freq: str | None) -> float:
@@ -110,6 +145,15 @@ def effective_bets(Sigma, w) -> float:
     probability distribution p, and ``exp(-sum p_i ln p_i)`` reports how many
     genuinely independent bets the portfolio holds. Ten names loading on one
     factor score near 1, not near 10.
+
+    CAVEAT (Meucci, Santangelo & Deguest 2015): this PCA-basis form is
+    basis-dependent when Sigma has repeated eigenvalues. ``Sigma = I`` (no
+    correlation at all) is degenerate -- every orthonormal basis is a valid
+    eigenbasis, and LAPACK's ``eigh`` happens to return the identity basis for
+    an identity matrix, which is what makes an equal-weighted uncorrelated
+    portfolio score N here. A basis aligned to ``w`` instead would score 1 for
+    the same portfolio. This is a property of the naive PCA form, not a bug;
+    minimum-torsion bases exist to remove the dependence but are out of scope.
     """
     Sigma, w = _check(Sigma, w)
     evals, evecs = np.linalg.eigh(Sigma)
