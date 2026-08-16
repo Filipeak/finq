@@ -9,6 +9,8 @@ factor of sixteen and both look plausible.
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
+from scipy import stats
 
 from finq.returns import PERIODS_PER_YEAR
 
@@ -189,3 +191,137 @@ def concentration(w, pct_rc) -> dict[str, float]:
         "hhi_weights": float((w ** 2).sum()),
         "hhi_risk": float((pct_rc ** 2).sum()),
     }
+
+
+def _portfolio_series(R, w) -> np.ndarray:
+    """Fixed-weight portfolio return series, validated via ``_check_returns``."""
+    arr, w = _check_returns(R, w)
+    return arr @ w
+
+
+def var_cvar(R, w, level: float = 0.95, method: str = "historical") -> tuple[float, float]:
+    """Value at risk and conditional VaR, reported as positive loss magnitudes.
+
+    ``historical`` reads the (1 - level) empirical quantile of the portfolio
+    return series directly. ``cornish_fisher`` instead adjusts the Gaussian
+    quantile for sample skew and excess kurtosis, so it can report a deeper
+    loss than the normal approximation when the return distribution is
+    left-skewed or fat-tailed -- exactly the shape financial returns tend to
+    have and a plain normal VaR misses.
+
+    CVaR is the mean of the losses at or beyond VaR; it is floored at VaR
+    itself so that a tail with no observations past the quantile (possible
+    for ``cornish_fisher``, whose VaR is a parametric estimate rather than a
+    literal data point) never reports a CVaR smaller than the VaR it sits
+    beside.
+    """
+    if not 0.5 < level < 1.0:
+        raise RiskError(f"level must be between 0.5 and 1, got {level}")
+    p = _portfolio_series(R, w)
+    if p.size < 30:
+        raise RiskError(f"only {p.size} observations; too few for a tail estimate")
+
+    if method == "historical":
+        var = -float(np.quantile(p, 1.0 - level))
+    elif method == "cornish_fisher":
+        mu, sd = float(p.mean()), float(p.std(ddof=0))
+        s, k = float(stats.skew(p)), float(stats.kurtosis(p, fisher=True))
+        z = float(stats.norm.ppf(1.0 - level))
+        z_cf = (z + (z ** 2 - 1) * s / 6
+                + (z ** 3 - 3 * z) * k / 24
+                - (2 * z ** 3 - 5 * z) * s ** 2 / 36)
+        var = -float(mu + z_cf * sd)
+    else:
+        raise RiskError(f"unknown method {method!r}; use 'historical' or 'cornish_fisher'")
+
+    tail = p[p <= -var]
+    cvar = -float(tail.mean()) if tail.size else var
+    return var, max(cvar, var)
+
+
+def max_drawdown(R, w) -> float:
+    """Largest peak-to-trough decline of the fixed-weight return series."""
+    p = _portfolio_series(R, w)
+    equity = np.cumprod(1.0 + p)
+    peak = np.maximum.accumulate(equity)
+    return float((1.0 - equity / peak).max())
+
+
+def betas(R, w, benchmarks) -> dict[str, float]:
+    """Univariate OLS beta of the portfolio against each benchmark separately.
+
+    Each benchmark is regressed on its own -- not jointly -- so the numbers
+    answer "how much does the portfolio move with WIG20" and "...with GSPC"
+    independently, rather than a multi-factor decomposition that would need
+    the benchmarks themselves to be reasonably uncorrelated to be readable.
+    """
+    if not isinstance(benchmarks, pd.DataFrame):
+        raise RiskError("benchmarks must be a DataFrame of return series")
+    if isinstance(R, pd.DataFrame):
+        common = R.index.intersection(benchmarks.index)
+        if len(common) < 30:
+            raise RiskError(f"only {len(common)} overlapping dates with the benchmarks")
+        p = _portfolio_series(R.loc[common], w)
+        bm = benchmarks.loc[common]
+    else:
+        p = _portfolio_series(R, w)
+        bm = benchmarks
+        if len(bm) != len(p):
+            raise RiskError("benchmark length does not match the return matrix")
+
+    out = {}
+    for name in bm.columns:
+        b = bm[name].to_numpy(dtype=float)
+        var_b = float(np.var(b, ddof=0))
+        if var_b <= 0:
+            raise RiskError(f"benchmark {name} has zero variance")
+        out[name] = float(np.cov(p, b, ddof=0)[0, 1] / var_b)
+    return out
+
+
+def exceedance_correlation(R, threshold: float = 1.0,
+                           min_obs: int = 20) -> tuple[np.ndarray, np.ndarray]:
+    """Correlation conditional on both assets falling below -threshold sigma.
+
+    Returns (downside_corr, unconditional_corr). This is the Longin-Solnik /
+    Ang-Bekaert diagnostic: it answers whether diversification survives a selloff.
+    """
+    arr = R.to_numpy(dtype=float) if isinstance(R, pd.DataFrame) else np.asarray(R, dtype=float)
+    z = (arr - arr.mean(axis=0)) / arr.std(axis=0, ddof=0)
+    N = arr.shape[1]
+
+    uncond = np.corrcoef(arr, rowvar=False)
+    down = np.eye(N)
+    for i in range(N):
+        for j in range(i + 1, N):
+            mask = (z[:, i] < -threshold) & (z[:, j] < -threshold)
+            n = int(mask.sum())
+            if n < min_obs:
+                raise RiskError(
+                    f"only {n} joint observations below -{threshold} sigma for "
+                    f"assets {i} and {j}; at least {min_obs} required. "
+                    "Lower the threshold or use a longer history."
+                )
+            c = float(np.corrcoef(arr[mask, i], arr[mask, j])[0, 1])
+            down[i, j] = down[j, i] = c
+    return down, uncond
+
+
+def fx_risk_share(R, fx_returns, w) -> float:
+    """Fraction of portfolio variance attributable to currency moves.
+
+    ``R`` is the total (local-asset-move + FX) return matrix and
+    ``fx_returns`` is the FX-only leg on the same weights; the share is the
+    covariance of the FX-only series with the total series, over the total
+    variance -- the beta of the currency leg onto the whole portfolio, which
+    sums to 1 across a currency/local decomposition of the same total.
+    """
+    total = _portfolio_series(R, w)
+    currency = _portfolio_series(fx_returns, w)
+    var_total = float(np.var(total, ddof=0))
+    if var_total <= 0:
+        raise RiskError("portfolio variance is zero; FX share undefined")
+    if float(np.var(currency, ddof=0)) == 0.0:
+        return 0.0
+    # Share of variance explained by the FX component, via its covariance with the total.
+    return float(np.cov(total, currency, ddof=0)[0, 1] / var_total)
