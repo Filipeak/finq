@@ -197,6 +197,50 @@ def test_404_mid_range_is_tolerated(seeded_cache, monkeypatch):
     assert len(s) > 0
 
 
+def test_fresh_cache_is_not_stale(seeded_cache):
+    """A fresh cache read must report attrs['stale'] == False, not just be truthy-absent."""
+    s = fx("USD", "2025-01-01", "2025-06-30", cache_dir=seeded_cache)
+    assert s.attrs["stale"] is False
+
+
+def test_successful_refetch_is_not_stale(seeded_cache, monkeypatch):
+    path = seeded_cache / "FX_USD.csv"
+    old_mtime = datetime.now().timestamp() - 86400 * 2
+    os.utime(path, (old_mtime, old_mtime))
+
+    def fake_fetch(code):
+        return pd.DataFrame({
+            "date": pd.date_range("2026-08-01", periods=10),
+            "mid": [3.8] * 10,
+        })
+
+    monkeypatch.setattr(data_module, "_fetch_nbp", fake_fetch)
+    s = fx("USD", "2026-08-01", "2026-08-10", cache_dir=seeded_cache)
+    assert s.attrs["stale"] is False
+
+
+def test_failed_refetch_fallback_is_stale(seeded_cache, monkeypatch):
+    """This is the reachable spec-9 gap Task 4b flagged: a network-down fallback
+    to cache must be visible to callers (mirrors PriceData.stale), or a report
+    built on months-old FX rates can look identical to a report built on fresh
+    ones."""
+    path = seeded_cache / "FX_USD.csv"
+    old_mtime = datetime.now().timestamp() - 86400 * 2
+    os.utime(path, (old_mtime, old_mtime))
+
+    def fake_fetch_fails(code):
+        raise DataError(f"FX {code}: fetch failed (network error)")
+
+    monkeypatch.setattr(data_module, "_fetch_nbp", fake_fetch_fails)
+    s = fx("USD", "2025-01-01", "2025-06-30", cache_dir=seeded_cache)
+    assert s.attrs["stale"] is True
+
+
+def test_pln_identity_is_not_stale(seeded_cache):
+    s = fx("PLN", "2025-01-01", "2025-06-30", cache_dir=seeded_cache)
+    assert s.attrs["stale"] is False
+
+
 def test_fresh_cache_no_refetch(seeded_cache, monkeypatch):
     """When cached FX file is fresh (< 1 day old), do not refetch."""
     path = seeded_cache / "FX_USD.csv"

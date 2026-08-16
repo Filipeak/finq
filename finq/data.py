@@ -146,16 +146,30 @@ def _fetch_nbp(code: str) -> pd.DataFrame:
 
 
 def fx(code: str, start: str, end: str, cache_dir: Path | None = None) -> pd.Series:
-    """PLN per one unit of `code`, on NBP publication days."""
+    """PLN per one unit of `code`, on NBP publication days.
+
+    The returned Series carries an out-of-band staleness flag in
+    ``s.attrs["stale"]`` (bool): True only when a refetch was attempted and
+    failed, and the cache was served as a fallback -- mirroring
+    ``PriceData.stale`` from ``prices()``. Attached via ``.attrs`` rather than
+    a wrapper return type so every existing ``isinstance(s, pd.Series)``
+    caller keeps working unchanged; callers that care about staleness (the
+    report header) read ``s.attrs["stale"]`` explicitly. Without this, a
+    network-down fallback to a months-old cache is indistinguishable from a
+    fresh fetch to every downstream consumer.
+    """
     code = code.upper()
     lo, hi = pd.Timestamp(start), pd.Timestamp(end)
 
     if code == "PLN":
         idx = pd.date_range(lo, hi, freq="D")
-        return pd.Series(1.0, index=idx, name="PLN")
+        s = pd.Series(1.0, index=idx, name="PLN")
+        s.attrs["stale"] = False
+        return s
 
     cache_dir = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE
     path = cache_dir / f"FX_{code}.csv"
+    is_stale = False
 
     if path.exists() and _is_cache_fresh(path):
         df = pd.read_csv(path, parse_dates=["date"])
@@ -170,7 +184,9 @@ def fx(code: str, start: str, end: str, cache_dir: Path | None = None) -> pd.Ser
                 s = s[(s.index >= lo) & (s.index <= hi)]
                 if s.empty:
                     raise DataError(f"FX {code}: no rates between {start} and {end}")
-                return s.rename(code)
+                s = s.rename(code)
+                s.attrs["stale"] = True
+                return s
             else:
                 raise
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -180,4 +196,6 @@ def fx(code: str, start: str, end: str, cache_dir: Path | None = None) -> pd.Ser
     s = s[(s.index >= lo) & (s.index <= hi)]
     if s.empty:
         raise DataError(f"FX {code}: no rates between {start} and {end}")
-    return s.rename(code)
+    s = s.rename(code)
+    s.attrs["stale"] = is_stale
+    return s
