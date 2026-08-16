@@ -196,6 +196,56 @@ def test_effective_bets_weights_each_principal_portfolio_by_its_eigenvalue():
     assert 1.0 < effective_bets(Sigma, W) < 3.0
 
 
+def test_effective_bets_uses_the_eigenbasis_not_the_asset_basis():
+    """The rotation is the whole method, so it needs a fixture that feels it.
+
+    Every other effective-bets fixture here is diagonal or equally weighted, and
+    for those the eigenbasis IS the standard basis -- so `w_tilde` and `w` agree
+    and the rotation could be skipped entirely without any test noticing.
+
+    A 2x2 equicorrelation matrix has analytically known eigenvectors that are
+    NOT standard basis vectors: (1,1)/sqrt(2) with eigenvalue s2(1+rho) and
+    (1,-1)/sqrt(2) with s2(1-rho). With s2=0.04, rho=0.5, w=(0.8, 0.2):
+        w_tilde = (1.0/sqrt2, 0.6/sqrt2) -> contributions (0.03, 0.0036)
+        p       = (0.892857, 0.107143)   -> exp(entropy) = 1.4056499
+    Using the un-rotated weights instead would give 1.5467599.
+    """
+    Sigma = np.array([[0.04, 0.02], [0.02, 0.04]])
+    w = np.array([0.8, 0.2])
+    assert effective_bets(Sigma, w) == pytest.approx(1.40564993, abs=1e-7)
+    assert effective_bets(Sigma, w) != pytest.approx(1.54675985, abs=1e-3)
+
+
+def test_effective_bets_survives_a_rank_deficient_covariance():
+    """T < N is permitted for the shrunk estimators, so this input is reachable.
+
+    A sample covariance from three observations on five assets has three
+    eigenvalues that are zero up to rounding -- some of them faintly negative.
+    Those modes contribute nothing and must be dropped, not turned into NaN by
+    taking log(0).
+    """
+    rng = np.random.default_rng(34)
+    X = rng.normal(size=(3, 5))
+    X = X - X.mean(axis=0)
+    Sigma = (X.T @ X) / 3
+    assert np.linalg.matrix_rank(Sigma) < 5
+    nb = effective_bets(Sigma, np.array([0.4, 0.25, 0.15, 0.1, 0.1]))
+    assert np.isfinite(nb)
+    assert nb == pytest.approx(1.16397141, abs=1e-7)
+
+
+def test_effective_bets_never_reports_less_than_one_bet():
+    """A non-PSD Sigma must not produce a sub-unit -- i.e. nonsensical -- count.
+
+    [[0.04, 0.06], [0.06, 0.04]] has eigenvalues 0.10 and -0.02. Left unclipped,
+    the negative mode makes one variance share exceed 1, the entropy goes
+    negative, and the metric reports 0.967 bets: fewer than holding one asset.
+    """
+    Sigma = np.array([[0.04, 0.06], [0.06, 0.04]])
+    assert np.linalg.eigvalsh(Sigma).min() < 0
+    assert effective_bets(Sigma, np.array([0.7, 0.3])) == pytest.approx(1.0)
+
+
 def test_effective_bets_falls_as_correlation_rises():
     sd = np.array([0.2, 0.35])
     w = np.array([0.6, 0.4])
