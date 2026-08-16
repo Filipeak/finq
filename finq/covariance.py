@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -109,6 +110,97 @@ def _diagnostics(method: str, Sigma: np.ndarray, T: int, N: int,
     )
 
 
+def ledoit_wolf_cc(R) -> tuple[np.ndarray, float]:
+    """Ledoit & Wolf (2003) shrinkage toward the constant-correlation target.
+
+    This is the CONSTANT-CORRELATION estimator of the 2003 "Honey, I Shrunk the
+    Sample Covariance Matrix" paper (Appendices A and B), not the 2004
+    scaled-identity version that sklearn.covariance.LedoitWolf implements. The
+    target keeps the sample variances and replaces every correlation with the
+    average sample correlation r-bar:
+
+        f_ii = s_ii,   f_ij = r-bar * sqrt(s_ii * s_jj)
+
+    Returns ``(Sigma, delta_hat)`` where ``delta_hat`` is the estimated optimal
+    shrinkage intensity in [0, 1]. Sigma is positive definite by construction
+    even when T <= N, because F is positive definite and S is PSD.
+    """
+    arr = _as_array(R)
+    T, N = arr.shape
+    if T < 2:
+        raise CovarianceError("need at least two observations")
+    if N < 2:
+        raise CovarianceError("need at least two assets")
+    if T <= N:
+        # Spec section 9: refuse 'sample' here, permit shrinkage with a prominent
+        # warning. The estimate is well defined and positive definite, but delta
+        # is doing nearly all the work and the correlations are barely observed.
+        warnings.warn(
+            f"T={T} <= N={N}: the sample covariance is singular, so this estimate "
+            "rests almost entirely on the constant-correlation target. Treat the "
+            "resulting correlations as indicative only.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    # sample_cov is the single definition of the divide-by-T (MLE) convention;
+    # the Ledoit-Wolf asymptotics below assume it, so do not inline a T-1 variant.
+    Y = arr - arr.mean(axis=0)
+    S = sample_cov(arr)
+    var = np.diag(S).copy()
+    if (var <= 0).any():
+        dead = [int(i) for i in np.flatnonzero(var <= 0)]
+        raise CovarianceError(
+            f"asset(s) at column index {dead} have zero variance (constant returns); "
+            "the average correlation is undefined. Drop the stale series first."
+        )
+    s = np.sqrt(var)
+
+    if N == 2:
+        # With a single off-diagonal correlation, its "average" is itself, so
+        # the constant-correlation target is algebraically identical to S --
+        # not approximately, exactly, by construction. gamma_hat = ||F-S||^2
+        # is then 0 up to floating-point noise alone (~1e-34, not exactly 0
+        # for most inputs), which turns delta into a coin flip on the sign of
+        # that noise instead of the mathematically forced 0.0. Short-circuit
+        # before the noise-sensitive ratio is ever formed.
+        return S, 0.0
+
+    corr = S / np.outer(s, s)
+    iu = np.triu_indices(N, k=1)
+    rbar = float(corr[iu].mean())
+
+    # Shrinkage target F: sample variances, one common correlation rbar.
+    F = rbar * np.outer(s, s)
+    np.fill_diagonal(F, var)
+
+    # pi-hat: summed asymptotic variances of the sample covariance entries.
+    # (1/T) sum_t (Y_it Y_jt - s_ij)^2 collapses to (1/T) sum_t (Y_it Y_jt)^2 - s_ij^2
+    # because s_ij is itself the mean of Y_it Y_jt.
+    Y2 = Y ** 2
+    pi_mat = (Y2.T @ Y2) / T - S ** 2
+    pi_hat = float(pi_mat.sum())
+
+    # theta[i, j] = theta-hat_{ii,ij} = (1/T) sum_t (Y_it^2 - s_ii)(Y_it Y_jt - s_ij)
+    theta = (Y ** 3).T @ Y / T - var[:, None] * S
+
+    # rho-hat: the diagonal terms of pi, plus the off-diagonal covariance between
+    # the sample entries and the estimated target. theta.T supplies theta_{jj,ij},
+    # and np.outer(1/s, s)[i, j] is s_j / s_i = sqrt(s_jj / s_ii).
+    off = (rbar / 2.0) * (np.outer(1.0 / s, s) * theta + np.outer(s, 1.0 / s) * theta.T)
+    np.fill_diagonal(off, 0.0)
+    rho_hat = float(np.diag(pi_mat).sum() + off.sum())
+
+    gamma_hat = float(((F - S) ** 2).sum())
+    if gamma_hat <= 0:
+        return S, 0.0            # sample already equals the target; nothing to shrink
+
+    delta = float(np.clip(((pi_hat - rho_hat) / gamma_hat) / T, 0.0, 1.0))
+    Sigma = delta * F + (1.0 - delta) * S
+    Sigma = (Sigma + Sigma.T) / 2.0          # kill float asymmetry
+    return Sigma, delta
+
+
 def estimate(R, method: str = "ledoit_wolf") -> tuple[np.ndarray, Diagnostics]:
     if method not in METHODS:
         raise CovarianceError(f"unknown method {method!r}; use one of {METHODS}")
@@ -125,5 +217,9 @@ def estimate(R, method: str = "ledoit_wolf") -> tuple[np.ndarray, Diagnostics]:
             )
         Sigma = sample_cov(arr)
         return Sigma, _diagnostics("sample", Sigma, T, N, None)
+
+    if method == "ledoit_wolf":
+        Sigma, delta = ledoit_wolf_cc(arr)
+        return Sigma, _diagnostics("ledoit_wolf", Sigma, T, N, delta)
 
     raise CovarianceError(f"method {method!r} not implemented yet")
