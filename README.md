@@ -23,6 +23,6 @@ It never forecasts returns. See `docs/superpowers/specs/` for why.
 ## Layout
 
 - `finq/` — the library
-- `skills/portfolio-quant/` — the skill Claude loads
+- `.claude/skills/portfolio-quant/` — the skill Claude loads
 - `resources/` — the source papers
 - `tests/` — run with `python -m pytest`

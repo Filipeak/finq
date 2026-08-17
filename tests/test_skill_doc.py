@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-SKILL = Path(__file__).parents[1] / "skills" / "portfolio-quant" / "SKILL.md"
+SKILL = Path(__file__).parents[1] / ".claude" / "skills" / "portfolio-quant" / "SKILL.md"
 
 
 def test_skill_file_exists_with_frontmatter():
