@@ -1,4 +1,4 @@
-# finance-utils
+# Quant Finance Utils
 
 Risk-based portfolio analytics for a PLN-denominated portfolio of Polish (WSE) and
 US holdings.
