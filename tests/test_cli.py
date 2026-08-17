@@ -287,3 +287,52 @@ def test_liquidity_table_converts_usd_holdings_to_pln(tmp_path, seeded_cache):
     # PLN-converted panel -- cross-check against the unconverted series.
     expected_stale = liq_mod.stale_price_flag(pdata.close[["SPY"]])["SPY"]
     assert printed_stale == expected_stale
+
+
+def test_analyze_weights_convert_quantity_holdings_to_pln(tmp_path, seeded_cache):
+    """CRITICAL GAP: _weights() (finq/__main__.py) computed
+    `quantity * last_close` and normalized directly, summing a ~776 USD SPY
+    close against a ~111 PLN PKO.WA close as if they were the same currency.
+    That weight array feeds every risk.* call in cmd_analyze (portfolio_vol,
+    risk_contributions, var_cvar, betas, ...), so a USD/EUR-heavy quantity
+    portfolio's entire risk report -- not just this one printed column -- was
+    built on wrong weights.
+
+    Recomputes the expected PLN-converted weight for SPY directly from
+    finq.data (mirroring _build()'s own pipeline) and cross-checks the
+    printed "weight" column in the "Weight vs risk contribution" table
+    against it, while also pinning that it is NOT the naive, unconverted
+    weight a broken implementation would print.
+    """
+    from finq import data as data_mod
+
+    p = tmp_path / "p.csv"
+    p.write_text("ticker,quantity\nPKO.WA,10\nSPY,1\n", encoding="utf-8")
+    r = _run(["analyze", str(p)], seeded_cache)
+    assert r.returncode == 0, r.stderr
+
+    tickers = ["PKO.WA", "SPY"]
+    end = pd.Timestamp.today().normalize()
+    start = end - pd.DateOffset(years=3)
+    pdata = data_mod.prices(tickers, str(start.date()), str(end.date()), cache_dir=seeded_cache)
+    usd_rate = data_mod.fx("USD", str(start.date()), str(end.date()), cache_dir=seeded_cache)
+
+    pko_last = pdata.close["PKO.WA"].ffill().iloc[-1]
+    spy_last_usd = pdata.close["SPY"].ffill().iloc[-1]
+    spy_last_pln = spy_last_usd * usd_rate.reindex(pdata.close.index).ffill().iloc[-1]
+
+    pko_value = 10 * pko_last
+    spy_value_pln = 1 * spy_last_pln
+    expected_spy_weight = spy_value_pln / (pko_value + spy_value_pln)
+
+    # What a BROKEN (currency-unconverted) implementation would compute.
+    spy_value_naive = 1 * spy_last_usd
+    naive_spy_weight = spy_value_naive / (pko_value + spy_value_naive)
+
+    num = r"[-+]?\d*\.?\d+"
+    m = re.search(rf"^SPY\s+({num})%\s+({num})%", r.stdout, re.MULTILINE)
+    assert m, r.stdout
+    printed_spy_weight = float(m.group(1)) / 100.0
+
+    assert printed_spy_weight == pytest.approx(expected_spy_weight, abs=1e-3)
+    assert printed_spy_weight != pytest.approx(naive_spy_weight, abs=0.05)

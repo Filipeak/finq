@@ -46,12 +46,17 @@ def _build(args):
     return pf, pdata, rm, held, bench, Sigma, diag, stale, rates
 
 
-def _weights(pf, pdata) -> np.ndarray:
+def _weights(pf, pdata, rates) -> np.ndarray:
     if pf.weights is not None:
         return pf.weights
     if pf.quantities is not None:
-        last = pdata.close[pf.tickers].ffill().iloc[-1].to_numpy(dtype=float)
-        value = pf.quantities * last
+        last = pdata.close[pf.tickers].ffill().iloc[-1]
+        last_pln = last.copy()
+        for t in pf.tickers:
+            code = pdata.currency[t]
+            if code != "PLN":
+                last_pln[t] = last[t] * rates[code].reindex(pdata.close.index).ffill().iloc[-1]
+        value = pf.quantities * last_pln.to_numpy(dtype=float)
         return value / value.sum()
     raise SystemExit(
         "analyze needs weights or quantities; this file has tickers only. "
@@ -61,7 +66,7 @@ def _weights(pf, pdata) -> np.ndarray:
 
 def cmd_analyze(args) -> None:
     pf, pdata, rm, held, bench, Sigma, diag, stale, rates = _build(args)
-    w = _weights(pf, pdata)
+    w = _weights(pf, pdata, rates)
     if pf.normalized:
         print("NOTE: input weights did not sum to 1 and were normalized.")
 
